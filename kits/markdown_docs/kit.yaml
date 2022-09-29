@@ -1,4 +1,5 @@
 name: markdown_docs
+spec_version: 1.0
 templates:
   - file: api_doc.md.tmpl
     out: /api_doc.md

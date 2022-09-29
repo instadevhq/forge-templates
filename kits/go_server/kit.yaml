@@ -1,4 +1,5 @@
 name: go_server
+spec_version: 1.0
 templates:
   - file: enums.go.tmpl
     out: /enums.go

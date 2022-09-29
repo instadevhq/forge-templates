@@ -1,4 +1,5 @@
 name: dart_client
+spec_version: 1.0
 templates:
   - file: client.dart.tmpl
     out: /client.dart
