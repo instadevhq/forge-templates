@@ -1,0 +1,106 @@
+package main
+
+import (
+	"testing"
+	"runtime"
+	"os"
+	"encoding/json"
+	"net/http"
+	"bytes"
+	"fmt"
+
+	"go.uber.org/goleak"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+
+	"github.com/instadevhq/apiforge/commons"
+
+	{{#each spec.resources}}
+	{{name}}service "{{project.name}}/build/gen/{{name}}_service"
+	{{/each}}
+)
+
+func init() {
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).
+		With().
+		Logger().
+		Level(zerolog.DebugLevel)
+}
+
+func Test{{camel spec.appName}}ServerIntegration(t *testing.T) {
+	// This block checks for goroutines that have been leaked after the test has completed.
+	// IgnoreCurrent pulls existing goroutines so that they can be ignored by the leak checks
+	// at a later point. Without this, the test itself will be detected by the leak checker
+	// and will result in afalse-positive leak & failed test.
+	opt := goleak.IgnoreCurrent()
+	prevGoroutineCount := runtime.NumGoroutine()
+
+	defer func() {
+		goleak.VerifyNone(t, opt)
+		t.Logf("Info(): Test '%s' completed with %v leaked goroutines\n", t.Name(), runtime.NumGoroutine()-prevGoroutineCount)
+	}()
+
+	// create new service
+	service, err := NewFromConfig(Config{
+		Host: "localhost",
+		Port: "5050",
+	})
+	if err != nil {
+		t.Error(err)
+		t.FailNow()
+	}
+
+	go func() {
+		err := service.Start()
+		if err != nil {
+			t.Error(err)
+		}
+	}()
+
+	defer t.Log("gracefully stopping service")
+	defer service.Close()
+
+	testCRUD(t)
+}
+
+func testCRUD(t *testing.T) {
+	defer http.DefaultClient.CloseIdleConnections()
+
+	{{#each spec.resources}}
+	resp{{camel name}}, err := http.Post("http://localhost:5050/{{snake name}}/getAll", "application/json", bytes.NewBuffer([]byte{}))
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	res{{camel name}} := struct{
+		Pagemeta commons.PageMeta `json:"pagemeta"`
+		Data []{{name}}service.{{camel name}} `json:"data"`
+	}{}
+
+	defer resp{{camel name}}.Body.Close()
+	err = json.NewDecoder(resp{{camel name}}.Body).Decode(&res{{camel name}})
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	fmt.Println(res{{camel name}})
+
+	// Test Create{{camel name}}
+	// TODO
+	// GenFake{{camel name}}Input()
+
+	// Test Get{{camel name}}
+	// TODO
+
+	// Test GetAll{{camel (plural name)}}
+	// TODO
+
+	// Test Update{{camel name}}
+	// TODO
+
+	// Test Delete{{camel name}}
+	// TODO
+	{{/each}}
+}

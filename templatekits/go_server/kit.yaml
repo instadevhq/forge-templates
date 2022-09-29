@@ -1,0 +1,34 @@
+name: go_server
+templates:
+  - file: enums.go.tmpl
+    out: /enums.go
+    render: one_per_app
+
+  - file: filestore.go.tmpl
+    out: /{{filestore.name}}_filestore/filestore.go
+    render: one_per_filestore
+
+  - file: integration_test.go.tmpl
+    out: /integration_test.go
+    render: one_per_app
+
+  - file: introspection_handler.go.tmpl
+    out: /introspection_handler.go
+    render: one_per_app
+
+  - file: main.go.tmpl
+    out: /main.go
+    render: one_per_app
+
+  - file: server_config.go.tmpl
+    out: /server_config.go
+    render: one_per_app
+
+  - file: server.go.tmpl
+    out: /server.go
+    render: one_per_app
+
+  - file: service.go.tmpl
+    out: /{{resource.name}}_service/{{resource.name}}_service.go
+    render: one_per_resource
+  

@@ -1,0 +1,48 @@
+# {{spec.appName}} API Docs
+
+{{#each spec.resources}}
+{{#with this as |resource|}}
+## Resource {{camel resource.name}}
+
+{{sentence resource.description}}
+{{#each resource.fields}}
+- {{lowerCamel type}} {{lowerCamel name}} {{#if (eq name resource.pKey)}}(primaryKey){{/if}}
+{{/each}}
+{{/with}}
+
+### Create{{camel name}}
+
+Route `/{{snake name}}/create`
+
+Example: 
+```sh
+curl -X POST -d "{}" http://localhost:5050/{{snake name}}/create | jq
+```
+
+### Get{{camel name}}
+
+Route `/{{snake name}}/get`
+
+Example: 
+```sh
+curl -X POST -d "{}" http://localhost:5050/{{snake name}}/get | jq
+```
+
+### GetAll{{camel (plural name)}}
+
+Route `/{{snake name}}/getAll`
+
+Example: 
+```sh
+curl -X POST -d "{}" http://localhost:5050/{{snake name}}/getAll | jq
+```
+
+### Delete{{camel name}}
+
+Route `/{{snake name}}/delete`
+
+Example: 
+```sh
+curl -X POST -d "{}" http://localhost:5050/{{snake name}}/delete | jq
+```
+{{/each}}

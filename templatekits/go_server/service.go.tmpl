@@ -1,0 +1,257 @@
+package {{resource.name}}_service
+
+import (
+	"fmt"
+	"context"
+
+	"github.com/rs/zerolog/log"
+	"gopkg.in/doug-martin/goqu.v5"
+
+	"github.com/instadevhq/apiforge/commons"
+
+	// import type-specific dependencies
+	{{#each (goTypeImports resource)}}
+	"{{this}}"
+	{{/each}}
+
+	// import value generator packages
+	{{#each resource.generators}}
+	{{{genPackage this}}}
+	{{/each}}
+
+	// import value mapper packages
+	{{#each resource.valueMappers}}
+	{{{valueMapperPackage this}}}
+	{{/each}}
+)
+
+{{#with resource}}
+// {{name}} {{description}}
+type {{camel name}} struct{
+	{{#each fields}}
+	{{fieldName name}} {{goType type}} "db:\"{{name}}\" json:\"{{lowerCamel name}}\""
+	{{/each}}
+}
+
+// {{camel name}}Input represents the fields used to create a {{camel name}} resource.
+type {{camel name}}Input struct{
+	{{#each formFields}}
+	{{fieldName name}} *{{goType type}} "json:\"{{lowerCamel name}}\""
+	{{/each}}
+}
+
+func GenFake{{camel name}}Input() {{camel name}}Input {
+	return {{camel name}}Input{
+		{{#each formFields}}
+		{{fieldName name}}: nil,
+		{{/each}}
+	}
+}
+
+func (i {{camel name}}Input) Validate() error {
+	// for now we're going to assume all form fields are required
+	{{#each formFields}}
+	// todo create generic method for all types called 'isNil' or 'isEmpty'
+	if i.{{fieldName name}} == nil {
+		return commons.ErrMissingParameter{ParamName: "{{name}}"}
+	}
+	{{/each}}
+
+	return nil
+}
+
+// {{camel name}}Changeset represents the fields used to update a {{camel name}} resource.
+type {{camel name}}Changeset struct{
+	{{#each fields}}
+	{{fieldName name}} {{goType type}} "json:\"{{name}}\""
+	{{/each}}
+}
+
+func Create{{camel name}}(db *goqu.Database, input {{camel name}}Input) ({{camel name}}, error) {
+	err := input.Validate()
+	if err != nil {
+		return {{camel name}}{}, fmt.Errorf("failed to create {{name}} resource, input could not be validated: %w", err)
+	}
+
+	insertResource := {{camel name}}{
+		// autopopulated fields
+		{{#each autopopulatedFields}}
+		{{#if generator}}
+		{{fieldName name}}: {{{genFunc generator}}}{{#if (genFuncRequiresDB generator)}}(db){{else}}(){{/if}},
+		{{else}}
+		{{fieldName name}}: {{{defaultLiteral}}},
+		{{/if}}
+		{{/each}}
+
+		// empty fields
+		{{#each emptyFields}}
+		// {{fieldName name}}: nil,
+		{{/each}}
+	}
+
+	// set form fields
+	{{#each formFields}}
+	if input.{{fieldName name}} != nil {
+		{{#if valueMapper}}
+		insertResource.{{fieldName valueMapper.outputTo}}, err = {{valueMapperFunc valueMapper.name}}(*input.{{fieldName valueMapper.inputFrom}})
+		if err != nil {
+			return {{camel name}}{}, fmt.Errorf("failed to execute value mapper {{valueMapper.name}} on formField {{name}}: %w", err)
+		}
+		{{else}}
+		insertResource.{{fieldName name}} = *input.{{fieldName name}}
+		{{/if}}
+	}
+	{{/each}}
+
+	newResource := {{camel name}}{}
+	_, err = db.
+		From("{{name}}").
+		Returning(
+			{{#each fields}}
+			"{{name}}",
+			{{/each}}
+		).
+		Insert(insertResource).
+		ScanStruct(&newResource)
+	if err != nil {
+		return {{camel name}}{}, fmt.Errorf("failed to create {{name}} resource: %w", err)
+	}
+
+	defer log.Debug().Interface("pkey", newResource.{{#with PrimaryKeyField}}{{fieldName name}}{{/with}}).Interface("input", input).Msg("created a new {{camel name}} resource")
+
+	// TODO push event into queue
+
+	return newResource, nil
+}
+
+func Get{{camel name}}(db *goqu.Database, {{#with PrimaryKeyField}}{{lowerCamel name}} {{goType type}}{{/with}}) ({{camel name}}, error) {
+	obj := {{camel name}}{}
+	exists, err := db.
+		From("{{name}}").
+		Select(
+			{{#each fields}}
+			"{{name}}",
+			{{/each}}
+		).
+		Where(goqu.Ex{
+			{{#with PrimaryKeyField}}
+			"{{name}}": {{lowerCamel name}},
+			{{/with}}
+		}).
+		Prepared(true).
+		ScanStruct(&obj)
+	if err != nil {
+		return {{camel name}}{}, fmt.Errorf("failed to execute Get{{camel name}} query: %w", err)
+	}
+
+	if !exists {
+		return {{camel name}}{}, commons.ErrResourceNotFound
+	}
+
+	return obj, nil
+}
+
+func GetAll{{camel (plural name)}}(db *goqu.Database, pageInput *commons.PageInput) (commons.PageMeta, []{{camel name}}, error) {
+	page := commons.PageInput{PageSize: 20, PageNumber: 1}
+	if pageInput != nil {
+		page = *pageInput
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return commons.PageMeta{}, nil, fmt.Errorf("failed to execute GetAll{{camel name}} query: %w", err)
+	}
+	defer tx.Rollback()
+	
+	objs := []{{camel name}}{}
+	err = tx.
+		From("{{name}}").
+		Select(
+			{{#each fields}}
+			"{{name}}",
+			{{/each}}
+		).
+		Offset(uint(page.Offset())).
+		Limit(uint(page.Limit())).
+		Prepared(true).
+		ScanStructs(&objs)
+	if err != nil {
+		return commons.PageMeta{}, nil, fmt.Errorf("failed to execute GetAll{{camel name}} query: %w", err)
+	}
+
+	count, err := tx.
+		From("{{name}}").
+		Select(
+			{{#each fields}}
+			"{{name}}",
+			{{/each}}
+		).
+		Prepared(true).
+		Count()
+	if err != nil {
+		return commons.PageMeta{}, nil, fmt.Errorf("failed to execute GetAll{{camel name}} query: %w", err)
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return commons.PageMeta{}, nil, fmt.Errorf("failed to execute GetAll{{camel name}} query: %w", err)
+	}
+
+	return commons.CreatePageMeta(page, uint64(count)), objs, nil
+}
+
+func Update{{camel name}}(db *goqu.Database, {{#with PrimaryKeyField}}{{lowerCamel name}} {{goType type}}{{/with}}, changeset {{camel name}}Changeset) ({{camel name}}, error) {
+	defer log.Debug().Interface("pkey",{{#with PrimaryKeyField}}{{lowerCamel name}}{{/with}}).Interface("changeset", changeset).Msg("updated a {{camel name}} resource")
+
+	updatedResource := {{camel name}}{}
+	_, err := db.
+		From("{{name}}").
+		Returning(
+			{{#each fields}}
+			"{{name}}",
+			{{/each}}
+		).
+		Where(goqu.Ex{
+			{{#with PrimaryKeyField}}
+			"{{name}}": {{lowerCamel name}},
+			{{/with}}
+		}).
+		Update(changeset).
+		ScanStruct(&updatedResource)
+	if err != nil {
+		return {{camel name}}{}, fmt.Errorf("failed to execute Update{{camel name}} query: %w", err)
+	}
+
+	return updatedResource, nil
+}
+
+func Delete{{camel name}}(db *goqu.Database, {{#with PrimaryKeyField}}{{lowerCamel name}} {{goType type}}{{/with}}) error {
+	defer log.Debug().Interface("pkey",{{#with PrimaryKeyField}}{{lowerCamel name}}{{/with}}).Msg("deleted a {{camel name}} resource")
+
+	result, err := db.
+		From("{{name}}").
+		Where(goqu.Ex{
+			{{#with PrimaryKeyField}}
+			"{{name}}": {{lowerCamel name}},
+			{{/with}}
+		}).
+		Delete().
+		ExecContext(context.TODO())
+	if err != nil {
+		return fmt.Errorf("failed to execute Delete{{camel name}} query: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to execute Delete{{camel name}} query: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return commons.ErrResourceNotFound
+	}
+
+	return nil
+}
+
+// TODO add watcher/subscriber functionality (or maybe via events?)
+{{/with}}

@@ -1,0 +1,24 @@
+package enums
+
+import "fmt"
+
+{{#each spec.enums}}
+type {{camel name}} string
+
+const (
+	{{#each identifiers}}
+	{{loudSnake this}} {{camel name}} = "{{this}}"
+	{{/each}}
+)
+
+func {{camel name}}FromString(in string) ({{camel name}}, error) {
+	switch in {
+		{{#each identifiers}}
+		case "{{this}}":
+			return {{loudSnake this}}, nil
+		{{/each}}
+		default:
+			return "", fmt.Errorf("unable to covert string to enum: unknown identifier '%s'", in)
+	}
+}
+{{/each}}

@@ -1,0 +1,5 @@
+name: dart_client
+templates:
+  - file: client.dart.tmpl
+    out: /client.dart
+    render: one_per_app

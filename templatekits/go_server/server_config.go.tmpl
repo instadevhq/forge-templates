@@ -1,0 +1,66 @@
+package main
+
+import (
+    "fmt"
+    "github.com/kelseyhightower/envconfig"
+
+    {{#if spec.filestores}}
+    "github.com/aws/aws-sdk-go/aws"
+    "github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
+    {{/if}}
+)
+
+type Config struct{
+    Host string `default:"localhost"`
+    Port string `default:"5050"`
+
+    CorsAllowedOrigins []string `split_words:"true" default:"*"`
+    CorsAllowCreds bool `split_words:"true" default:"false"`
+    CorsEnableLogging bool `split_words:"true" default:"true"`
+
+    {{#if spec.resources}}
+    PostgresURL string `split_words:"true" required:"true"`
+    {{/if}}
+
+    {{#if spec.filestores}}
+
+    S3Endpoint string `envconfig:"{{upper project.name}}_S3_ENDPOINT" required:"true"`
+    S3Region string `envconfig:"{{upper project.name}}_S3_REGION" default:"us-east-1"`
+    S3DisableTLS bool `envconfig:"{{upper project.name}}_S3_DISABLE_TLS" default:"false"`
+    S3AccessKeyID string `envconfig:"{{upper project.name}}_S3_ACCESS_KEY_ID" required:"true" json:"-"`
+    S3SecretAccessKey string `envconfig:"{{upper project.name}}_S3_SECRET_ACCESS_KEY" required:"true" json:"-"`
+    {{/if}}
+}
+
+func GetConfig() (Config, error) {
+    var conf Config
+    err := envconfig.Process("{{upper project.name}}", &conf)
+    if err != nil {
+       return Config{}, fmt.Errorf("failed to fetch config: %w", err)
+    }
+
+    return conf, nil
+}
+
+{{#if spec.filestores}}
+func (conf Config) GetS3Client() (*s3.S3, error) {
+    session, err := session.NewSession(&aws.Config{
+        Region:      aws.String(conf.S3Region),
+        Credentials: credentials.NewStaticCredentials(conf.S3AccessKeyID, conf.S3SecretAccessKey, ""),
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    s3Client := s3.New(session, &aws.Config{
+		Endpoint:         aws.String(conf.S3Endpoint),
+		Region:           aws.String(conf.S3Region),
+		S3ForcePathStyle: aws.Bool(true),
+		DisableSSL:       aws.Bool(conf.S3DisableTLS),
+	})
+
+    return s3Client, nil
+}
+{{/if}}

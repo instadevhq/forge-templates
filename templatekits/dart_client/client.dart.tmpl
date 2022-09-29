@@ -1,0 +1,95 @@
+import 'package:http/http.dart' as http;
+import 'dart:convert' as convert;
+
+class {{camel spec.appName}}Client {
+    final String endpointUrl;
+
+    {{camel spec.appName}}Client({this.endpointUrl = "http://localhost:5050"});
+
+    Future<Map<String, dynamic>> _makeReq(String route, Object input) async {
+        Map<String, String> headers = {
+            "Content-Type": "application/json",
+        };
+
+        http.Response response = await http.post(endpointUrl + route, headers: headers, body: input);
+        return convert.jsonDecode(response.body) as Map<String, dynamic>;
+    }
+
+    {{#each spec.resources}}
+    {{#with this as |resource|}}
+    Future<{{camel resource.name}}> create{{camel resource.name}}({{camel resource.name}}Input input) async {
+        Map<String, dynamic> res = await _makeReq("/{{snake resource.name}}/create", input.toJson());
+        return {{camel resource.name}}.fromJson(res);
+    }
+
+    Future<List<{{camel resource.name}}>> getAll{{camel (plural resource.name)}}() async {
+        return <{{camel resource.name}}>[];
+    }
+
+    Future<{{camel resource.name}}> get{{camel resource.name}}({{#with PrimaryKeyField}}{{dartType type}} {{lowerCamel name}}{{/with}}) async {
+        Map<String, dynamic> res = await _makeReq("/{{snake resource.name}}/get", {
+            {{#with PrimaryKeyField}}"{{lowerCamel name}}": {{lowerCamel name}},{{/with}}
+        });
+        return {{camel resource.name}}.fromJson(res);
+    }
+
+    Future<void> delete{{camel resource.name}}({{#with PrimaryKeyField}}{{dartType type}} {{lowerCamel name}}{{/with}}) async {
+        await _makeReq("/{{snake resource.name}}/delete", {
+            {{#with PrimaryKeyField}}"{{lowerCamel name}}": {{lowerCamel name}},{{/with}}
+        });
+    }
+    {{#if @last}}{{"\n"}}{{else}}{{/if}}
+    {{/with}}
+    {{/each}}
+}
+
+{{#each spec.resources}}
+{{#with this as |resource|}}
+// {{sentence resource.description}}
+class {{camel resource.name}} {
+    {{#each resource.fields}}
+    {{{dartType type}}} {{lowerCamel name}};
+    {{/each}}
+
+    {{camel resource.name}}({
+        {{#each resource.fields}}
+        required this.{{lowerCamel name}},
+        {{/each}}
+    });
+
+    {{camel resource.name}}.fromJson(Map<String, dynamic> json)
+        {{#each resource.fields}}
+        {{#if @first}}: {{else}}  {{/if}}{{lowerCamel name}} = json["{{lowerCamel name}}"]{{#if @last}};{{else}},{{/if}}
+        {{/each}}
+
+    Map<String, dynamic> toJson() => {
+        {{#each resource.fields}}
+        "{{lowerCamel name}}": {{lowerCamel name}},
+        {{/each}}
+    };
+}
+
+class {{camel resource.name}}Input {
+    {{#each resource.formFields}}
+    {{{dartType type}}} {{lowerCamel name}} = {{{dartZeroval type}}};
+    {{/each}}
+
+    {{camel resource.name}}Input({
+        {{#each resource.formFields}}
+        required this.{{lowerCamel name}},
+        {{/each}}
+    });
+
+    {{camel resource.name}}Input.fromJson(Map<String, dynamic> json)
+        {{#each resource.formFields}}
+        {{#if @first}}: {{else}}  {{/if}}{{lowerCamel name}} = json["{{lowerCamel name}}"]{{#if @last}};{{else}},{{/if}}
+        {{/each}}
+
+    Map<String, dynamic> toJson() => {
+        {{#each resource.formFields}}
+        "{{lowerCamel name}}": {{lowerCamel name}},
+        {{/each}}
+    };
+}
+{{/with}}
+{{/each}}

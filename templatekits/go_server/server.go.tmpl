@@ -1,0 +1,318 @@
+package main
+
+import (
+	"fmt"
+	"io"
+	"time"
+	"os"
+	"errors"
+	"context"
+	"encoding/json"
+	"net/http"
+	"database/sql"
+
+	"goji.io"
+	"goji.io/pat"
+	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
+	"github.com/rs/cors"
+    "gopkg.in/doug-martin/goqu.v5"
+	"github.com/google/uuid"
+
+    _ "gopkg.in/doug-martin/goqu.v5/adapters/postgres"
+    _ "github.com/lib/pq"
+	// "github.com/cosmotek/pqstream"
+	"github.com/instadevhq/apiforge/commons"
+
+	{{#each spec.resources}}
+	{{name}}service "{{project.name}}/build/gen/{{name}}_service"
+	{{/each}}
+
+	{{#each spec.filestores}}
+	{{name}}filestore "{{project.name}}/build/gen/{{name}}_filestore"
+	{{/each}}
+
+	{{#if project.introspectionEnabled}}
+	"{{project.name}}/build/gen/introspection"
+	{{/if}}
+)
+
+func init() {
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).
+		With().
+		Logger().
+		Level(zerolog.DebugLevel)
+}
+
+// TODO provide network backend interface that allows for
+// laptop-to-phone BLE proxy communication
+
+type Service struct{
+	ctx context.Context
+	cancelContext context.CancelFunc
+	initCompleted bool
+
+	conf Config
+}
+
+func NewFromEnv() (*Service, error) {
+	conf, err := GetConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, cancelContext := context.WithCancel(context.Background())
+	return &Service{
+		ctx: ctx,
+		cancelContext: cancelContext,
+		conf: conf,
+	}, nil
+}
+
+func NewFromConfig(conf Config) (*Service, error) {
+	ctx, cancelContext := context.WithCancel(context.Background())
+	return &Service{
+		ctx: ctx,
+		cancelContext: cancelContext,
+		conf: conf,
+	}, nil
+}
+
+func (s *Service) Started() chan struct{} {
+	ticker := time.NewTicker(time.Millisecond * 100)
+	defer ticker.Stop()
+
+	sig := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <- s.ctx.Done():
+				sig <- struct{}{}
+				return
+			case <- ticker.C:
+				if s.initCompleted {
+					sig <- struct{}{}
+				}
+				return
+			}
+		}
+	}()
+
+	return sig
+}
+
+func (s *Service) Close() error {
+	s.cancelContext()
+
+	return nil
+}
+
+func (s *Service) Start() error {
+	// defer cancel call in case of error return early
+	defer s.cancelContext()
+
+	postgres, err := sql.Open("postgres", s.conf.PostgresURL)
+    if err != nil {
+        return err
+    }
+	defer postgres.Close()
+
+	// create goqu wrapper
+	db := goqu.New("postgres", postgres)
+
+	// http.Handle("/eventstream", pqstream.EventstreamHandler{
+	// 	PostgreSQLConnectionString: "port=5555 user=psql password=psql dbname=apiforge sslmode=disable",
+	// })
+
+	mux := goji.NewMux()
+	{{#if project.introspectionEnabled}}
+	mux.Handle(pat.Get("/introspection"), introspection.IntrospectionHandler())
+	{{/if}}
+
+	{{#if spec.filestores}}
+	// init s3 client and filestores
+	s3Client, err := s.conf.GetS3Client()
+	if err != nil {
+		return fmt.Errorf("failed to create s3 client: %w", err)
+	}
+	{{/if}}
+
+	{{#each spec.filestores}}
+	{{name}}fs, err := {{name}}filestore.New(s.ctx, s3Client)
+	if err != nil {
+		return fmt.Errorf("failed to initialize {{name}} filestore: %w", err)
+	}
+
+	mux.HandleFunc(pat.Post("/files/{{name}}/upload"), func(res http.ResponseWriter, req *http.Request) {
+		file, fileHeader, err := req.FormFile("{{formKey}}")
+		if err != nil {
+			http.Error(res, err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		newID := uuid.New().String()
+		err = {{name}}fs.Set(newID, file, fileHeader)
+		if err != nil {
+			http.Error(res, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		err = json.NewEncoder(res).Encode(map[string]string{"id": newID})
+		if err != nil {
+			commons.WriteErr(res, err)
+			return
+		}
+	})
+	{{/each}}
+
+	{{#each spec.resources}}
+	mux.HandleFunc(pat.Post("/{{snake name}}/create"), func(res http.ResponseWriter, req *http.Request) {
+		res.Header().Set("Content-Type", "application/json")
+		defer req.Body.Close()
+
+		input := {{name}}service.{{camel name}}Input{}
+		err := json.NewDecoder(req.Body).Decode(&input)
+		if err != nil {
+			commons.WriteErr(res, err)
+			return
+		}
+
+		newResource, err := {{name}}service.Create{{camel name}}(db, input)
+		if err != nil {
+			commons.WriteErr(res, err)
+			return
+		}
+
+		err = json.NewEncoder(res).Encode(newResource)
+		if err != nil {
+			commons.WriteErr(res, err)
+			return
+		}
+	})
+
+	mux.HandleFunc(pat.Post("/{{snake name}}/get"), func(res http.ResponseWriter, req *http.Request) {
+		res.Header().Set("Content-Type", "application/json")
+
+		input := map[string]string{}
+		err := json.NewDecoder(req.Body).Decode(&input)
+		if err != nil {
+			http.Error(res, fmt.Sprintf("bad request body: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		resource, err := {{name}}service.Get{{camel name}}(db, input["{{#with PrimaryKeyField}}{{lowerCamel name}}{{/with}}"])
+		if err != nil {
+			commons.WriteErr(res, err)
+			return
+		}
+
+		err = json.NewEncoder(res).Encode(resource)
+		if err != nil {
+			commons.WriteErr(res, err)
+			return
+		}
+	})
+
+	mux.HandleFunc(pat.Post("/{{snake name}}/getAll"), func(res http.ResponseWriter, req *http.Request) {
+		res.Header().Set("Content-Type", "application/json")
+
+		defer req.Body.Close()
+
+		input := new(commons.PageInput)
+		err := json.NewDecoder(req.Body).Decode(input)
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				commons.WriteErr(res, err)
+				return
+			}
+
+			input = nil
+		}
+
+		pagemeta, resources, err := {{name}}service.GetAll{{camel (plural name)}}(db, input)
+		if err != nil {
+			commons.WriteErr(res, err)
+			return
+		}
+
+		resource := map[string]interface{}{
+			"pagemeta": pagemeta,
+			"data": resources,
+		}
+
+		err = json.NewEncoder(res).Encode(resource)
+		if err != nil {
+			commons.WriteErr(res, err)
+			return
+		}
+	})
+
+	mux.HandleFunc(pat.Post("/{{snake name}}/delete"), func(res http.ResponseWriter, req *http.Request) {
+		res.Header().Set("Content-Type", "application/json")
+
+		input := map[string]string{}
+		err := json.NewDecoder(req.Body).Decode(&input)
+		if err != nil {
+			http.Error(res, fmt.Sprintf("bad request body: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		err = {{name}}service.Delete{{camel name}}(db, input["{{#with PrimaryKeyField}}{{lowerCamel name}}{{/with}}"])
+		if err != nil {
+			commons.WriteErr(res, err)
+			return
+		}
+	})
+	{{/each}}
+
+	corsMiddleware := cors.New(cors.Options{
+		AllowedOrigins:   s.conf.CorsAllowedOrigins,
+		AllowCredentials: s.conf.CorsAllowCreds,
+		Debug: s.conf.CorsEnableLogging,
+	})
+
+	listenAddr := fmt.Sprintf(":%s", s.conf.Port)
+	server := &http.Server{
+		Addr:    listenAddr,
+		Handler: HandlePanics(corsMiddleware.Handler(mux)),
+	}
+	defer server.Shutdown(s.ctx)
+
+	log.Info().Str("addr", listenAddr).Msg("starting {{spec.appName}} api server")
+	errChan := make(chan error, 1)
+
+	go func() {
+		errChan <- fmt.Errorf("server halted due to returned error: %w",  server.ListenAndServe())
+	}()
+
+	select {
+	case err := <- errChan:
+		return err
+	case <-s.ctx.Done():
+		return nil
+	}
+}
+
+func HandlePanics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+		defer func() {
+			err := recover()
+			if err != nil {
+				log.Error().Str("module", "recovery_middleware").Interface("err", err).Msg("captured panic in HTTP middleware")
+
+				jsonBody, _ := json.Marshal(map[string]any{
+					"type": "middleware_recovery",
+					"error": err,
+				})
+
+				res.Header().Set("Content-Type", "application/json")
+				res.WriteHeader(http.StatusInternalServerError)
+				res.Write(jsonBody)
+			}
+
+		}()
+
+		next.ServeHTTP(res, req)
+	})
+}

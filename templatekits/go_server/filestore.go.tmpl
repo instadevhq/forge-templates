@@ -1,0 +1,184 @@
+package {{filestore.name}}_filestore
+
+import (
+	"fmt"
+	"errors"
+	"time"
+	"context"
+	"bytes"
+	"path/filepath"
+	"io"
+	"io/ioutil"
+	"mime/multipart"
+
+	// "github.com/rs/zerolog/log"
+	"github.com/gabriel-vasile/mimetype"
+	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+)
+
+{{#with filestore}}
+const bucketName = "{{kebab (plural name)}}"
+var linkDuration = (time.Hour * 24) * 7
+
+// {{camel name}}Filestore {{description}}
+type {{camel name}}Filestore struct{
+	ctx context.Context
+	s3Client *s3.S3
+}
+
+func New(ctx context.Context, s3Client *s3.S3) ({{camel name}}Filestore, error) {
+	// ensure bucket exists
+	_, err := s3Client.HeadBucketWithContext(ctx, &s3.HeadBucketInput{
+		Bucket: aws.String(bucketName),
+	})
+	if err != nil {
+		if aerr, ok := err.(awserr.Error); ok {
+			switch aerr.Code() {
+			case s3.ErrCodeNoSuchBucket:
+				return {{camel name}}Filestore{}, errors.New("Bucket not found")
+			default:
+				return {{camel name}}Filestore{}, err
+			}
+		} else {
+			return {{camel name}}Filestore{}, errors.New("Bucket not found")
+		}
+	}
+
+	return {{camel name}}Filestore{
+		ctx: ctx,
+		s3Client: s3Client,
+	}, nil
+}
+
+func (f {{camel name}}Filestore) Set(id string, file io.Reader, metadata *multipart.FileHeader) error {
+	sizeKB := float64(metadata.Size / 1024)
+	if sizeKB > float64({{config.maxFileSizeKB}}) {
+		return fmt.Errorf("file size (%f kb) too large, max allowed is {{config.maxFileSizeKB}} kb", sizeKB)
+	}
+
+	fileBytes, err := ioutil.ReadAll(file)
+	if err != nil {
+		return fmt.Errorf("failed to read file contents: %w", err)
+	}
+
+	typeOf := mimetype.Detect(fileBytes)
+	if typeOf == nil {
+		return errors.New("could not detect mime type for file")
+	}
+
+	{{#if config.whitelistedMimeTypes}}
+	whitelistedMimeTypes := []string{
+		{{#each config.whitelistedMimeTypes}}"{{this}}",{{/each}}
+	}
+
+	isWhitelisted := false
+
+	checkloop:
+	for _, mimeType := range whitelistedMimeTypes {
+		if typeOf.Is(mimeType) {
+			isWhitelisted = true
+			break checkloop
+		}
+	}
+
+	if !isWhitelisted {
+		return fmt.Errorf("file type '%s' is not allowed", typeOf.String())
+	}
+	{{/if}}
+
+	embedMeta := map[string]*string{
+		"filename": aws.String(metadata.Filename),
+		"sizeKb": aws.String(fmt.Sprintf("%f", sizeKB)),
+		"mimeType": aws.String(typeOf.String()),
+		"mimeExt": aws.String(typeOf.Extension()),
+	}
+
+	putObjInput := &s3.PutObjectInput{
+		Body:                 bytes.NewReader(fileBytes),
+		Bucket:               aws.String(bucketName),
+		Key:                  aws.String(filepath.Join("files", id)),
+		ContentType: 		  aws.String(typeOf.String()),
+		//ContentMD5: func() *string {
+		//		h := md5.New()
+		//		h.Write(buf.Bytes())
+		//		return aws.String(base64.StdEncoding.EncodeToString(h.Sum(nil)))
+		//}(),
+		//ContentEncoding: aws.String("gzip"),
+		//ContentType: aws.String("application/x-gzip"),
+		Metadata: 			  embedMeta,
+		{{#if config.encryptAtRest}}
+		ServerSideEncryption: aws.String("AES256"),
+		{{/if}}
+	}
+
+	_, err = f.s3Client.PutObjectWithContext(f.ctx, putObjInput)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (f {{camel name}}Filestore) Remove(id string) error {
+	delObjInput := &s3.DeleteObjectInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(filepath.Join("files", id)),
+	}
+
+	_, err := f.s3Client.DeleteObjectWithContext(f.ctx, delObjInput)
+	if err != nil {
+		if aerr, ok := err.(awserr.Error); ok {
+			switch aerr.Code() {
+			case s3.ErrCodeNoSuchKey:
+				return nil
+			default:
+				return err
+			}
+		}
+		return err
+	}
+
+	return nil
+}
+
+// func (f {{camel name}}Filestore) GetReader() (io.ReadCloser, error) {
+// 	input := &s3.GetObjectInput{
+// 		Bucket: aws.String(bucketName),
+// 		Key:    aws.String(filepath.Join(c.basepath, filename)),
+// 	}
+
+// 	result, err := f.s3Client.GetObjectWithContext(ctx, input)
+// 	if err != nil {
+// 		if aerr, ok := err.(awserr.Error); ok {
+// 			switch aerr.Code() {
+// 			case s3.ErrCodeNoSuchKey:
+// 				return nil, errors.New("Not found")
+// 			default:
+// 				return nil, err
+// 			}
+// 		}
+// 		return nil, err
+// 	}
+
+// 	return result.Body, nil
+// }
+
+func (f {{camel name}}Filestore) GetURL(id string) (time.Time, string, error) {
+	input := &s3.GetObjectInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(filepath.Join("files", id)),
+	}
+
+	req, _ := f.s3Client.GetObjectRequest(input)
+	expiry := time.Now().UTC().Add(linkDuration)
+
+	url, err := req.Presign(linkDuration)
+	if err != nil {
+		return time.Now(), "", err
+	}
+
+	return expiry, url, nil
+}
+{{/with}}

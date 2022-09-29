@@ -1,0 +1,5 @@
+name: markdown_docs
+templates:
+  - file: api_doc.md.tmpl
+    out: /api_doc.md
+    render: one_per_app
