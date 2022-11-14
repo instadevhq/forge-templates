@@ -7,7 +7,7 @@ templates:
 
   - file: filestore.go.tmpl
     out: /{{filestore.name}}_filestore/filestore.go
-    render: one_per_filestore
+    render: one_per_app
 
   - file: integration_test.go.tmpl
     out: /integration_test.go
@@ -31,5 +31,5 @@ templates:
 
   - file: service.go.tmpl
     out: /{{resource.name}}_service/{{resource.name}}_service.go
-    render: one_per_resource
+    render: one_per_app
   
