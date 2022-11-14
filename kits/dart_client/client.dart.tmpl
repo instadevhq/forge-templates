@@ -1,6 +1,11 @@
 import 'package:http/http.dart' as http;
 import 'dart:convert' as convert;
 
+{{#each app.operations}}
+// {{this.description}}
+Future<void> {{lowerCamel this.name}}() async {}
+{{/each}}
+
 class {{camel spec.appName}}Client {
     final String endpointUrl;
 
@@ -43,53 +48,23 @@ class {{camel spec.appName}}Client {
     {{/each}}
 }
 
-{{#each spec.resources}}
-{{#with this as |resource|}}
-// {{sentence resource.description}}
-class {{camel resource.name}} {
-    {{#each resource.fields}}
-    {{{dartType type}}} {{lowerCamel name}};
+{{#each app.types }}
+// {{this.description}}
+// Type FQN: {{this.fQN}}
+class {{camel this.name}} {
+    {{#each this.fields}}
+    {{{dartType typeName}}} {{lowerCamel name}};
     {{/each}}
 
-    {{camel resource.name}}({
-        {{#each resource.fields}}
-        required this.{{lowerCamel name}},
-        {{/each}}
-    });
-
-    {{camel resource.name}}.fromJson(Map<String, dynamic> json)
-        {{#each resource.fields}}
+    {{camel this.name}}.fromJson(Map<String, dynamic> json)
+        {{#each this.fields}}
         {{#if @first}}: {{else}}  {{/if}}{{lowerCamel name}} = json["{{lowerCamel name}}"]{{#if @last}};{{else}},{{/if}}
         {{/each}}
 
     Map<String, dynamic> toJson() => {
-        {{#each resource.fields}}
+        {{#each this.fields}}
         "{{lowerCamel name}}": {{lowerCamel name}},
         {{/each}}
     };
 }
-
-class {{camel resource.name}}Input {
-    {{#each resource.formFields}}
-    {{{dartType type}}} {{lowerCamel name}} = {{{dartZeroval type}}};
-    {{/each}}
-
-    {{camel resource.name}}Input({
-        {{#each resource.formFields}}
-        required this.{{lowerCamel name}},
-        {{/each}}
-    });
-
-    {{camel resource.name}}Input.fromJson(Map<String, dynamic> json)
-        {{#each resource.formFields}}
-        {{#if @first}}: {{else}}  {{/if}}{{lowerCamel name}} = json["{{lowerCamel name}}"]{{#if @last}};{{else}},{{/if}}
-        {{/each}}
-
-    Map<String, dynamic> toJson() => {
-        {{#each resource.formFields}}
-        "{{lowerCamel name}}": {{lowerCamel name}},
-        {{/each}}
-    };
-}
-{{/with}}
 {{/each}}
