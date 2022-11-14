@@ -1,56 +1,68 @@
 import 'package:http/http.dart' as http;
-import 'dart:convert' as convert;
+import 'dart:convert';
 import 'dart:core';
 
 class {{camel app.name}}Client {
   final String endpointUrl;
   final bool allowInsecure;
 
-  {{camel app.name}}Client({this.endpointUrl = "http://localhost:5050", this.allowInsecure = false});
+  {{camel app.name}}Client({this.endpointUrl = "localhost:5050", this.allowInsecure = true});
 
-  {{#each app.operations}}
-  // {{this.description}}
-  Future<void> {{lowerCamel this.name}}() async {
+{{#each app.operations as |op| }}
+{{#with (lookupType app.types op.responseTypeFQN) as |returnType| }}
+  // {{sentence op.description}}
+  Future<{{camel returnType.name}}> {{lowerCamel op.name}}() async {
     Uri url = Uri(
       scheme: allowInsecure ? 'http' : 'https',
       host: this.endpointUrl,
-      path: '{{this.hTTPSpec.path}}',
+      path: '{{op.hTTPSpec.path}}',
       queryParameters: null,
     );
 
-    {{#if (eq this.hTTPSpec.method "GET")}}
-    http.Response response = await http.get(url, headers);
+    {{#if (eq op.hTTPSpec.method "GET")}}
+    http.Response response = await http.get(url, {});
     {{else if (eq this.hTTPSpec.method "POST")}}
+    Map<String,String> headers = {
+      'Content-Type': 'application/json',  
+    };
+
     http.Response response = await http.post(url, headers, body: null);
     {{/if}}
+    Map jsonRes = jsonDecode(response.body);
+
     switch (response.statusCode) {
-    {{#each this.hTTPSpec.StatusCodesFQNMapping}}
+    {{#each op.hTTPSpec.StatusCodesFQNMapping}}
       case {{this}}:
         {{#with (lookupType app.types @key) as |typedef| }}
-        return {{camel typedef.name}}.fromJson(response.body);
+        {{#if this.isErrorType}}
+        Map<String,dynamic> bodyJson = jsonRes['error'];
+        {{else}}
+        Map<String,dynamic> bodyJson = jsonRes['result'];
+        {{/if}}
+        {{#if this.isErrorType}}throw {{camel typedef.name}}.fromJson(bodyJson);{{else}}return {{camel typedef.name}}.fromJson(bodyJson);{{/if}}
         {{/with}}
-        break;
+
+    {{/each}}
       default:
         throw 'Unexpected status code ${response.statusCode}';
-        break;
-    {{/each}}
     }
   }
   {{#if @last}}{{else}}{{"\n"}}{{/if}}
-  {{/each}}
+{{/with}}
+{{/each}}
 }
 
 {{#each app.types }}
-// {{this.description}}
+// {{sentence this.description}}
 // Type FQN: {{this.fQN}}
-class {{camel this.name}} {
+class {{camel this.name}} {{#if this.isErrorType}}implements Exception {{/if}}{
   {{#each this.fields}}
   {{{dartType typeName}}} {{lowerCamel name}};
   {{/each}}
 
   {{camel this.name}}.fromJson(Map<String, dynamic> json)
     {{#each this.fields}}
-    {{#if @first}}: {{else}} {{/if}}{{lowerCamel name}} = json["{{lowerCamel name}}"]{{#if @last}};{{else}},{{/if}}
+    {{#if @first}}:{{else}} {{/if}} {{lowerCamel name}} = json["{{lowerCamel name}}"]{{#if @last}};{{else}},{{/if}}
     {{/each}}
 
   Map<String, dynamic> toJson() => {
@@ -59,4 +71,5 @@ class {{camel this.name}} {
     {{/each}}
   };
 }
+{{#if @last}}{{else}}{{"\n"}}{{/if}}
 {{/each}}

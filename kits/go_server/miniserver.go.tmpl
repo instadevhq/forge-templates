@@ -1,0 +1,96 @@
+package main
+
+import (
+    "fmt"
+    "log"
+    "net/http"
+    "database/sql"
+    "encoding/json"
+    "os"
+
+    "github.com/lib/pq"
+    chi "github.com/go-chi/chi/v5"
+    "github.com/go-chi/chi/v5/middleware"
+    "github.com/georgysavva/scany/v2/sqlscan"
+
+    {{!-- {{#each app.types}}
+    {{#each this.fields}}
+    "{{goTypeImports typeName}}"
+    {{/each}}
+    {{/each}} --}}
+)
+
+{{#each app.types}}
+// {{sentence this.description}}
+// Type FQN: {{this.fQN}}
+type {{camel this.name}} struct{
+  {{#each this.fields}}
+  {{camel name}} {{{goType typeName}}} `json:"{{name}}"`
+  {{/each}}
+}
+{{#if this.isErrorType}}
+
+func (t {{camel this.name}}) Error() error {
+    return nil
+}
+
+func Record{{camel this.name}}(db *sql.DB, {{#each this.fields}}{{name}} {{{goType typeName}}}, {{/each}}) ({{camel this.name}}, error) {
+    return {{camel this.name}}{}, nil
+}
+{{/if}}
+{{#if @last}}{{else}}{{"\n"}}{{/if}}
+{{/each}}
+
+func main() {
+    // create new router
+    router := chi.NewRouter()
+
+    // router middlewares
+	router.Use(middleware.RequestID)
+    router.Use(middleware.RealIP)
+    router.Use(middleware.Logger)
+    router.Use(middleware.Recoverer)
+
+    conn, err := sql.Open("postgres", os.Getenv("DATABASE_URL"))
+    if err != nil {
+    	fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
+    	os.Exit(1)
+    }
+    defer conn.Close()
+
+    // routes
+    {{#each app.operations as |op|}}
+    router.{{title (lower op.hTTPSpec.method)}}("{{op.hTTPSpec.Path}}", func(res http.ResponseWriter, req *http.Request) {
+        {{#with (lookupType app.types op.responseTypeFQN) as |returnType| }}
+        // returnData := {{camel returnType.name}}{}
+
+        {{#each op.plan.databaseOperations}}
+        {{!-- {{this.mustGetSQLArgs}} --}}
+        rows, err := conn.Query(`{{{this.mustToSQL}}}`)
+        if err != nil {
+            http.Error(res, err.Error(), http.StatusInternalServerError)
+            return
+        }
+
+        rowVal := []map[string]interface{}{}
+        err = sqlscan.ScanAll(&rowVal, rows)
+        if err != nil {
+            http.Error(res, err.Error(), http.StatusInternalServerError)
+            return
+        }
+        {{/each}}
+
+        encoder := json.NewEncoder(res)
+        encoder.SetIndent("", "    ")
+        err = encoder.Encode(map[string]any{"result": rowVal})
+        if err != nil {
+            http.Error(res, err.Error(), http.StatusInternalServerError)
+            return
+        }
+        {{/with}}
+    })
+    {{/each}}
+
+    log.Println("starting {{app.name}} app on localhost:5050")
+	http.ListenAndServe("localhost:5050", router)
+}
