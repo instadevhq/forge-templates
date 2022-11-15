@@ -5,13 +5,17 @@ import (
     "log"
     "net/http"
     "database/sql"
+    "errors"
     "encoding/json"
+    "time"
+    "runtime"
     "os"
 
     "github.com/lib/pq"
     chi "github.com/go-chi/chi/v5"
     "github.com/go-chi/chi/v5/middleware"
     "github.com/georgysavva/scany/v2/sqlscan"
+    _ "github.com/lib/pq"
 
     {{!-- {{#each app.types}}
     {{#each this.fields}}
@@ -20,23 +24,53 @@ import (
     {{/each}} --}}
 )
 
-{{#each app.types}}
+{{#each app.types as | typedef | }}
 // {{sentence this.description}}
-// Type FQN: {{this.fQN}}
-type {{camel this.name}} struct{
-  {{#each this.fields}}
+// Type FQN: {{typedef.fQN}}
+type {{camel typedef.name}} struct{
+  {{#each typedef.fields}}
   {{camel name}} {{{goType typeName}}} `json:"{{name}}"`
   {{/each}}
 }
-{{#if this.isErrorType}}
+{{#if (eq typedef.typeOf 1)}}
 
-func (t {{camel this.name}}) Error() error {
-    return nil
+func (t {{camel typedef.name}}) Error() string {
+    return fmt.Sprintf("{{camel typedef.name}}: [{{#each typedef.fields}}{{lowerCamel this.name}} = (%v){{#if @last}}{{else}}, {{/if}}{{/each}}]", {{#each typedef.fields}}t.{{camel this.name}}{{#if @last}}{{else}}, {{/if}}{{/each}})
 }
 
-func Record{{camel this.name}}(db *sql.DB, {{#each this.fields}}{{name}} {{{goType typeName}}}, {{/each}}) ({{camel this.name}}, error) {
-    return {{camel this.name}}{}, nil
+{{#if typedef.formFields}}
+func New{{camel typedef.name}}({{#if typedef.formPlan.databaseOperations}}conn *sql.DB, {{/if}}{{#each typedef.formFields}}{{name}} {{{goType typeName}}}{{#if @last}}{{else}}, {{/if}}{{/each}}) ({{camel typedef.name}}, error) {
+    result := {{camel typedef.Name}}{}
+    
+    {{#each typedef.formPlan.databaseOperations}}
+    {{!-- {{this.mustGetSQLArgs}} --}}
+    const sqlStr = `{{{this.mustToSQL}}}`
+    rows, err := conn.Query(sqlStr, {{#each typedef.formFields}}{{name}}{{#if @last}}{{else}}, {{/if}}{{/each}})
+    if err != nil {
+        return {{camel this.name}}{}, fmt.Errorf("failed to execute sql query for method 'New{{camel this.Name}}': %w", err)
+    }
+
+    rowVal := []map[string]interface{}{}
+    err = sqlscan.ScanAll(&rowVal, rows)
+    if err != nil {
+        return {{camel this.name}}{}, fmt.Errorf("failed to scan sql query results for method 'New{{camel this.Name}}': %w", err)
+    }
+
+    if len(rowVal) == 0 {
+        return {{camel this.name}}{}, errors.New("no results returned by query from 'New{{camel this.Name}}'")
+    }
+    row := rowVal[0]
+
+{{#each this.dataFieldMappings}}
+{{#with (lookupField typedef @key) as | field |}}
+    result.{{camel field.name}} = row["{{this.columnName}}"].({{goType field.typeName}})
+{{/with}}
+{{/each}}
+{{/each}}
+
+    return result, nil
 }
+{{/if}}
 {{/if}}
 {{#if @last}}{{else}}{{"\n"}}{{/if}}
 {{/each}}
@@ -62,11 +96,21 @@ func main() {
     {{#each app.operations as |op|}}
     router.{{title (lower op.hTTPSpec.method)}}("{{op.hTTPSpec.Path}}", func(res http.ResponseWriter, req *http.Request) {
         {{#with (lookupType app.types op.responseTypeFQN) as |returnType| }}
-        // returnData := {{camel returnType.name}}{}
+        result := {{camel returnType.name}}{}
 
-        {{#each op.plan.databaseOperations}}
+        apiErr, err := NewApiError(conn, "Test Error", "this is a test error")
+		if err != nil {
+			panic(err)
+		}
+
+		http.Error(res, apiErr.Error(), http.StatusInternalServerError)
+
+
+        {{#each op.plan.databaseOperations as |dbOp|}}
         {{!-- {{this.mustGetSQLArgs}} --}}
-        rows, err := conn.Query(`{{{this.mustToSQL}}}`)
+
+        const sqlStr = `{{{dbOp.mustToSQL}}}`
+        rows, err := conn.Query(sqlStr)
         if err != nil {
             http.Error(res, err.Error(), http.StatusInternalServerError)
             return
@@ -78,11 +122,33 @@ func main() {
             http.Error(res, err.Error(), http.StatusInternalServerError)
             return
         }
-        {{/each}}
+
+        if len(rowVal) == 0 {
+            http.Error(res, "no results found", http.StatusNotFound)
+            return
+        }
+        row := rowVal[0]
+
+{{#each dbOp.dataFieldMappings}}
+{{#with (lookupField returnType @key) as | field |}}
+        result.{{camel field.name}} = row["{{this.columnName}}"].({{goType field.typeName}})
+{{/with}}
+{{/each}}
+{{#each dbOp.computationFieldMappings}}
+{{#with (lookupField returnType @key) as | field |}}
+        result.{{camel field.name}} = row["{{this.alias}}"].({{goType field.typeName}})
+{{/with}}
+{{/each}}
+{{/each}}
+{{#each op.plan.serverOperations}}
+{{#with (lookupField returnType this.resultMappingFQN) as | field |}}
+        result.{{camel field.name}} = {{goType field.typeName}}({{this.expression}})
+{{/with}}
+{{/each}}
 
         encoder := json.NewEncoder(res)
         encoder.SetIndent("", "    ")
-        err = encoder.Encode(map[string]any{"result": rowVal})
+        err = encoder.Encode(map[string]any{"result": result})
         if err != nil {
             http.Error(res, err.Error(), http.StatusInternalServerError)
             return
