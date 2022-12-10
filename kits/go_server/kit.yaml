@@ -1,5 +1,8 @@
 name: go_server
 spec_version: 1.0
+partials:
+  - name: typedef
+    file: typedef.go.tmplpart
 templates:
   - file: miniserver.go.tmpl
     out: /miniserver.go

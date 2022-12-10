@@ -1,0 +1,7 @@
+// {{sentence this.description}}
+// Type FQN: {{typedef.fQN}}
+type {{camel typedef.name}} struct{
+{{#each typedef.fields}}
+{{camel name}} {{{goType typeName}}} `json:"{{name}}"`
+{{/each}}
+}
