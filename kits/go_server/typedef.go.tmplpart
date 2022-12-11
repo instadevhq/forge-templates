@@ -2,6 +2,72 @@
 // Type FQN: {{typedef.fQN}}
 type {{camel typedef.name}} struct{
 {{#each typedef.fields}}
-{{camel name}} {{{goType typeName}}} `json:"{{name}}"`
+    {{camel name}} {{{goType typeName}}} `json:"{{name}}"`
 {{/each}}
 }
+
+{{#if (eq typedef.typeOf 1)}}
+
+func (t {{camel typedef.name}}) Error() string {
+    return fmt.Sprintf("{{camel typedef.name}}: [{{#each typedef.fields}}{{lowerCamel this.name}} = (%v){{#if @last}}{{else}}, {{/if}}{{/each}}]", {{#each typedef.fields}}t.{{camel this.name}}{{#if @last}}{{else}}, {{/if}}{{/each}})
+}
+
+func (t {{camel typedef.name}}) MustJSONError() string {
+    dat, err := json.MarshalIndent(map[string]any{
+        "error": map[string]any{
+            "_typeof": "{{camel typedef.name}}",
+{{#each typedef.fields}}
+            "{{lowerCamel this.name}}": t.{{camel this.name}},
+{{/each}}
+        },
+    }, "", "    ")
+    if err != nil {
+        panic(fmt.Errorf("failed to generate {{camel typedef.name}} JSON error: %w", err))
+    }
+
+    return string(dat)
+}
+
+{{#if typedef.formFields}}
+func MustNew{{camel typedef.name}}({{#if typedef.formPlan.databaseOperations}}conn *sql.DB, {{/if}}{{#each typedef.formFields}}{{name}} {{{goType typeName}}}{{#if @last}}{{else}}, {{/if}}{{/each}}) {{camel typedef.name}} {
+    val, err := New{{camel typedef.name}}({{#if typedef.formPlan.databaseOperations}}conn, {{/if}}{{#each typedef.formFields}}{{name}}{{#if @last}}{{else}}, {{/if}}{{/each}})
+    if err != nil {
+        panic(fmt.Errorf("failed to form {{camel typedef.name}} type: %w", err))
+    }
+
+    return val
+}
+
+func New{{camel typedef.name}}({{#if typedef.formPlan.databaseOperations}}conn *sql.DB, {{/if}}{{#each typedef.formFields}}{{name}} {{{goType typeName}}}{{#if @last}}{{else}}, {{/if}}{{/each}}) ({{camel typedef.name}}, error) {
+    result := {{camel typedef.Name}}{}
+    
+    {{#each typedef.formPlan.databaseOperations}}
+    {{!-- {{this.mustGetSQLArgs}} --}}
+    const sqlStr = `{{{this.mustToSQL}}}`
+    rows, err := conn.Query(sqlStr, {{#each typedef.formFields}}{{name}}{{#if @last}}{{else}}, {{/if}}{{/each}})
+    if err != nil {
+        return {{camel this.name}}{}, fmt.Errorf("failed to execute sql query for method 'New{{camel this.Name}}': %w", err)
+    }
+
+    rowVal := []map[string]interface{}{}
+    err = sqlscan.ScanAll(&rowVal, rows)
+    if err != nil {
+        return {{camel this.name}}{}, fmt.Errorf("failed to scan sql query results for method 'New{{camel this.Name}}': %w", err)
+    }
+
+    if len(rowVal) == 0 {
+        return {{camel this.name}}{}, errors.New("no results returned by query from 'New{{camel this.Name}}'")
+    }
+    row := rowVal[0]
+
+{{#each this.dataFieldMappings}}
+{{#with (lookupField app @key) as | field |}}
+    result.{{camel field.name}} = row["{{this.columnName}}"].({{goType field.typeName}})
+{{/with}}
+{{/each}}
+{{/each}}
+
+    return result, nil
+}
+{{/if}}
+{{/if}}

@@ -1,0 +1,115 @@
+{{#with (lookupType app.types op.responseTypeFQN) as |returnType| }}
+{{#if op.inputTypeFQN}}
+{{#with (lookupType app.types op.inputTypeFQN) as |inputType| }}
+input := {{camel inputType.name}}{}
+err := json.NewDecoder(req.Body).Decode(&input)
+if err != nil {
+    http.Error(
+        res,
+        MustNewApiError(conn, "Bad Input", err.Error()).MustJSONError(),
+        http.StatusBadRequest,
+    )
+    return
+}
+{{/with}}
+{{/if}}
+
+{{#each op.plan.databaseOperations as |dbOp|}}
+{{!-- {{this.mustGetSQLArgs}} --}}
+
+const sqlStr = `{{{dbOp.mustToSQL}}}`
+rows, err := conn.QueryContext(req.Context(), sqlStr{{#each dbOp.inputFieldMappings}}{{#with (lookupField app @key) as |in|}}, input.{{camel in.name}}{{/with}}{{/each}})
+if err != nil {
+    http.Error(
+        res,
+        MustNewApiError(conn, "Internal Server Error", "failed to execute '{{op.name}}' database query: "+err.Error()).MustJSONError(),
+        http.StatusInternalServerError,
+    )
+    return
+}
+
+result := {{camel returnType.name}}{}
+rowVal := []map[string]interface{}{}
+err = sqlscan.ScanAll(&rowVal, rows)
+if err != nil {
+    http.Error(
+        res,
+        MustNewApiError(conn, "Internal Server Error", "failed to scan results of '{{op.name}}' database query: "+err.Error()).MustJSONError(),
+        http.StatusInternalServerError,
+    )
+    return
+}
+
+if len(rowVal) == 0 {
+    http.Error(
+        res,
+        MustNewApiError(conn, "Not Found", "'{{op.name}}' database query returned no results").MustJSONError(),
+        http.StatusNotFound,
+    )
+    return
+}
+row := rowVal[0]
+
+{{#each dbOp.dataFieldMappings}}
+{{#with (lookupField app @key) as | field |}}
+{{#if (hasSqlScanner field.typeOf)}}
+{{!-- result.{{camel field.name}} = {{{goZeroval field.typeName}}} --}}
+err = result.{{camel field.name}}.Scan(row["{{this.columnName}}"])
+if err != nil {
+    http.Error(
+        res,
+        MustNewApiError(conn, "Internal Server Error", "'{{op.name}}' failed to scan result field").MustJSONError(),
+        http.StatusInternalServerError,
+    )
+}
+{{else}}
+result.{{camel field.name}} = row["{{this.columnName}}"].({{goType field.typeName}})
+{{/if}}
+{{/with}}
+{{/each}}
+{{#each dbOp.computationFieldMappings}}
+{{#with (lookupField app @key) as | field |}}
+result.{{camel field.name}} = row["{{this.alias}}"].({{goType field.typeName}})
+{{/with}}
+{{/each}}
+{{/each}}
+{{#each op.plan.serverOperations}}
+{{#with (lookupField app this.resultMappingFQN) as | field |}}
+result.{{camel field.name}} = {{goType field.typeName}}({{this.expression}})
+{{/with}}
+{{/each}}
+
+{{#each op.plan.filestoreOperations as |fsOp|}}
+{{#if (eq fsOp.type "FSREAD")}}
+{{#each fsOp.dataFieldMappings as |attr|}}
+{{#if (eq attr "list_buckets")}}
+buckets, err := client.ListBuckets()
+if err != nil {
+    http.Error(
+        res,
+        MustNewApiError(conn, "Internal Server Error", "failed to complete list buckets filestore request").MustJSONError(),
+        http.StatusInternalServerError,
+    )
+    return
+}
+
+bucketNames := []string{}
+for _, bucket := range buckets {
+    bucketNames = append(bucketNames, bucket.Name)
+}
+{{#with (lookupField app @key) as | field |}}
+result.{{camel field.name}} = bucketNames
+{{/with}}
+{{/if}}
+{{/each}}
+{{/if}}
+{{/each}}
+
+encoder := json.NewEncoder(res)
+encoder.SetIndent("", "    ")
+err = encoder.Encode(map[string]any{"result": result})
+if err != nil {
+    http.Error(res, err.Error(), http.StatusInternalServerError)
+    return
+}
+{{/with}}
