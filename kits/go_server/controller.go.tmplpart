@@ -18,7 +18,20 @@ if err != nil {
 {{!-- {{this.mustGetSQLArgs}} --}}
 
 const sqlStr = `{{{dbOp.mustToSQL}}}`
-rows, err := conn.QueryContext(req.Context(), sqlStr{{#each dbOp.inputFieldMappings}}{{#with (lookupField app @key) as |in|}}, input.{{camel in.name}}{{/with}}{{/each}})
+{{!-- {{#unless (not dbOp.hasOutputFields)}}
+_, err = conn.ExecContext(req.Context(), sqlStr{{#each dbOp.inputFieldMappings}}{{#with (lookupField app @key) as |in|}}, input.{{camel in.name}}{{/with}}{{/each}})
+if err != nil {
+    http.Error(
+        res,
+        MustNewApiError(conn, "Internal Server Error", "failed to execute '{{op.name}}' database query: "+err.Error()).MustJSONError(),
+        http.StatusInternalServerError,
+    )
+    return
+}
+
+http.WriteHeader(http.StatusOK)
+{{else}} --}}
+rows, err := conn.QueryContext(req.Context(), sqlStr{{#each dbOp.mustGetSQLArgs}}{{#with (lookupField app this) as |in|}}, input.{{camel in.name}}{{/with}}{{/each}})
 if err != nil {
     http.Error(
         res,
