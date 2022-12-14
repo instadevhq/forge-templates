@@ -2,7 +2,7 @@
 // Type FQN: {{typedef.fQN}}
 type {{camel typedef.name}} struct{
 {{#each typedef.fields}}
-    {{camel name}} {{{goType typeName}}} `json:"{{name}}"`
+    {{camel name}} {{#if nullable}}*{{/if}}{{{goType typeName}}} `json:"{{name}}"`
 {{/each}}
 }
 
